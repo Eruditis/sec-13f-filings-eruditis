@@ -1,3 +1,5 @@
+require 'open-uri'
+
 class SecClient
   BASE_URL = "https://www.sec.gov"
   EXPECTED_COL_NAMES = %i(cik company_name form_type date_filed filename)
@@ -18,41 +20,63 @@ class SecClient
     )
 
     FileUtils.mkdir_p(File.dirname(filename))
-    Down.download(url, destination: filename)
+
+    puts "DEBUG ERIC!!!: Adding custom headers"
+    # Adding custom headers for User-Agent and Accept-Encoding
+    headers = {
+      "User-Agent" => "Mozilla/5.0 (Eruditis eric@eruditis.com)",
+      "Accept-Encoding" => "gzip, deflate"
+    }
+
+    # Down.download(url, destination: filename)
+    Down.download(url, destination: filename, headers: headers)
+    puts "DEBUG ERIC!!!: File downloaded successfully"
 
     thirteen_fs = []
     col_names = nil
 
-    IO.foreach(filename) do |raw_line|
-      line = raw_line.
-        encode("UTF-8", invalid: :replace, undef: :replace, replace: "?").
-        strip.
-        split("|")
+    # Decompress the file and read its content
+    Zlib::GzipReader.open(filename) do |gz|
+      # IO.foreach(filename) do |raw_line|
+      gz.each_line do |raw_line|
+        # puts "DEBUG ERIC!!!: Raw line content - #{raw_line.inspect}"
 
-      next unless line.size == EXPECTED_COL_NAMES.size
+        line = raw_line.
+          encode("UTF-8", invalid: :replace, undef: :replace, replace: "?").
+          strip.
+          split("|")
 
-      if col_names.blank?
-        col_names = line.map { |n| n.downcase.gsub(" ", "_").to_sym }
-        raise "Unexpected column names" unless col_names == EXPECTED_COL_NAMES
-        next
+        # puts "DEBUG ERIC!!!: Processed line content - #{line.inspect}"
+        next unless line.size == EXPECTED_COL_NAMES.size
+
+        if col_names.blank?
+          col_names = line.map { |n| n.downcase.gsub(" ", "_").to_sym }
+          if col_names != EXPECTED_COL_NAMES
+            puts "DEBUG ERIC!!!: Unexpected column names detected"
+            puts "  Expected: #{EXPECTED_COL_NAMES.inspect}"
+            puts "  Actual: #{col_names.inspect}"
+            raise "Unexpected column names"
+          end
+          next
+        end
+
+        row = col_names.zip(line).to_h
+
+        next unless THIRTEEN_F_FORM_TYPES.include?(row.fetch(:form_type))
+
+        full_submission_url = "#{BASE_URL}/Archives/#{row.fetch(:filename)}"
+        dir_url = full_submission_url.chomp(".txt").gsub("-", "")
+
+        thirteen_fs << Hashie::Mash.new({
+          external_id: dir_url.split("/").last,
+          company_name: row.fetch(:company_name),
+          form_type: row.fetch(:form_type).upcase,
+          cik: padded_cik(row.fetch(:cik)),
+          date_filed: row.fetch(:date_filed).to_date,
+          full_submission_url: full_submission_url,
+          directory_url: dir_url
+        })
       end
-
-      row = col_names.zip(line).to_h
-
-      next unless THIRTEEN_F_FORM_TYPES.include?(row.fetch(:form_type))
-
-      full_submission_url = "#{BASE_URL}/Archives/#{row.fetch(:filename)}"
-      dir_url = full_submission_url.chomp(".txt").gsub("-", "")
-
-      thirteen_fs << Hashie::Mash.new({
-        external_id: dir_url.split("/").last,
-        company_name: row.fetch(:company_name),
-        form_type: row.fetch(:form_type).upcase,
-        cik: padded_cik(row.fetch(:cik)),
-        date_filed: row.fetch(:date_filed).to_date,
-        full_submission_url: full_submission_url,
-        directory_url: dir_url
-      })
     end
 
     File.delete(filename) if delete_tmpfile
